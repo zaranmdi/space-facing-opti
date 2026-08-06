@@ -1,0 +1,15 @@
+__pycache__/
+.env
+.venv/
+venv/
+.streamlit/secrets.toml
+.ipynb_checkpoints/
+*.pyc
+
+# Local data extracts
+*.csv
+*.xlsx
+
+# Local tooling
+.DS_Store
+Thumbs.db
