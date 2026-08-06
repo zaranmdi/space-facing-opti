@@ -36,6 +36,12 @@ The repo includes `startup.sh` for the App Service startup command.
 
 GitHub Actions deployment is available in `.github/workflows/deploy-azure-app-service.yml`.
 
+## Streamlit Community Cloud
+
+Streamlit Community Cloud deployment steps are documented in `DEPLOY_STREAMLIT_CLOUD.md`.
+
+Use `streamlit_secrets.example.toml` as the template for hosted Streamlit secrets.
+
 ## Repository notes
 
 Local CSV and Excel extracts are ignored by Git because the dashboard is intended to query Snowflake live.

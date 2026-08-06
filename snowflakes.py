@@ -7,6 +7,11 @@ import pandas as pd
 import snowflake.connector
 from dotenv import load_dotenv
 
+try:
+    import streamlit as st
+except Exception:  # pragma: no cover - Streamlit is optional for non-app usage.
+    st = None
+
 # Load .env from repo root first, then allow local cwd override if present.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
@@ -20,24 +25,44 @@ def _env(name: str, default: str | None = None) -> str | None:
     return cleaned or default
 
 
+def _secret(name: str) -> str | None:
+    if st is None:
+        return None
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _setting(name: str, default: str | None = None) -> str | None:
+    secret_value = _secret(name)
+    if secret_value is not None:
+        return secret_value
+    return _env(name, default)
+
+
 def build_snowflake_params() -> dict[str, str]:
-    connection_name = _env("SNOWFLAKE_CONNECTION_NAME")
+    connection_name = _setting("SNOWFLAKE_CONNECTION_NAME")
     if connection_name:
         params = {"connection_name": connection_name}
     else:
         params = {
-            "user": _env("SNOWFLAKE_USER", "267714"),
-            "account": _env("SNOWFLAKE_ACCOUNT", "bunnings.australia-east.privatelink"),
-            "role": _env("SNOWFLAKE_ROLE", "SPACE_PRODUCTIVITY_ANALYST_DE_GENERAL_PRD"),
-            "warehouse": _env("SNOWFLAKE_WAREHOUSE", "PRD_DEVELOPER_WH"),
+            "user": _setting("SNOWFLAKE_USER", "267714"),
+            "account": _setting("SNOWFLAKE_ACCOUNT", "bunnings.australia-east.privatelink"),
+            "role": _setting("SNOWFLAKE_ROLE", "SPACE_PRODUCTIVITY_ANALYST_DE_GENERAL_PRD"),
+            "warehouse": _setting("SNOWFLAKE_WAREHOUSE", "PRD_DEVELOPER_WH"),
         }
 
     optional_settings = {
-        "database": _env("SNOWFLAKE_DATABASE"),
-        "schema": _env("SNOWFLAKE_SCHEMA"),
-        "password": _env("SNOWFLAKE_PASSWORD"),
-        "authenticator": _env("SNOWFLAKE_AUTHENTICATOR"),
-        "token": _env("SNOWFLAKE_TOKEN"),
+        "database": _setting("SNOWFLAKE_DATABASE"),
+        "schema": _setting("SNOWFLAKE_SCHEMA"),
+        "password": _setting("SNOWFLAKE_PASSWORD"),
+        "authenticator": _setting("SNOWFLAKE_AUTHENTICATOR"),
+        "token": _setting("SNOWFLAKE_TOKEN"),
     }
 
     if optional_settings["token"] and not optional_settings["authenticator"]:
