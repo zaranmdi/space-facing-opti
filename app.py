@@ -388,13 +388,18 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
 
     planogram_left, planogram_right = st.columns(2)
     top_planograms = (
-        item_location_frame.groupby("PLANOGRAM_NAME", dropna=False)
+        item_location_frame.groupby(["PLANOGRAM_ID", "PLANOGRAM_NAME"], dropna=False)
         .agg(
             item_locations=("DW_ITEM_ID", "count"),
             needs_more_space=("NEEDS_MORE_SPACE_FLAG", "sum"),
             possible_donors=("POSSIBLE_SPACE_DONOR_FLAG", "sum"),
         )
         .reset_index()
+    )
+    top_planograms["PLANOGRAM_LABEL"] = (
+        top_planograms["PLANOGRAM_ID"].astype(str).fillna("")
+        + " - "
+        + top_planograms["PLANOGRAM_NAME"].astype(str).fillna("")
     )
 
     with planogram_left:
@@ -404,7 +409,7 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
         fig = px.bar(
             add_space_planograms,
             x="needs_more_space",
-            y="PLANOGRAM_NAME",
+            y="PLANOGRAM_LABEL",
             orientation="h",
             hover_data=["item_locations", "possible_donors"],
             title="Planograms with the most space-add opportunities",
@@ -419,7 +424,7 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
         fig = px.bar(
             reduce_space_planograms,
             x="possible_donors",
-            y="PLANOGRAM_NAME",
+            y="PLANOGRAM_LABEL",
             orientation="h",
             hover_data=["item_locations", "needs_more_space"],
             title="Planograms with the most space-reduce opportunities",
