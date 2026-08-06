@@ -26,6 +26,14 @@ Streamlit dashboard for reviewing kitchen department space optimisation outputs 
 
 The app uses the connection helper in `snowflakes.py`. Do not commit credentials or secret files.
 
+For hosted deployments, configure Snowflake credentials through environment variables. The helper supports password, named-connection, or OAuth-style non-interactive auth. If no non-interactive settings are present, local runs fall back to `externalbrowser`.
+
+## Azure App Service
+
+Azure App Service deployment steps are documented in `DEPLOY_AZURE_APP_SERVICE.md`.
+
+The repo includes `startup.sh` for the App Service startup command.
+
 ## Repository notes
 
 Local CSV and Excel extracts are ignored by Git because the dashboard is intended to query Snowflake live.

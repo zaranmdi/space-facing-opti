@@ -12,14 +12,51 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 load_dotenv()
 
 
-def snowflake_connect():
-    params = {
-        "user": "267714",
-        "account": "bunnings.australia-east.privatelink",
-        "role": "SPACE_PRODUCTIVITY_ANALYST_DE_GENERAL_PRD",
-        "warehouse": "PRD_DEVELOPER_WH",
-        "authenticator": "externalbrowser",
+def _env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    cleaned = value.strip()
+    return cleaned or default
+
+
+def build_snowflake_params() -> dict[str, str]:
+    connection_name = _env("SNOWFLAKE_CONNECTION_NAME")
+    if connection_name:
+        params = {"connection_name": connection_name}
+    else:
+        params = {
+            "user": _env("SNOWFLAKE_USER", "267714"),
+            "account": _env("SNOWFLAKE_ACCOUNT", "bunnings.australia-east.privatelink"),
+            "role": _env("SNOWFLAKE_ROLE", "SPACE_PRODUCTIVITY_ANALYST_DE_GENERAL_PRD"),
+            "warehouse": _env("SNOWFLAKE_WAREHOUSE", "PRD_DEVELOPER_WH"),
+        }
+
+    optional_settings = {
+        "database": _env("SNOWFLAKE_DATABASE"),
+        "schema": _env("SNOWFLAKE_SCHEMA"),
+        "password": _env("SNOWFLAKE_PASSWORD"),
+        "authenticator": _env("SNOWFLAKE_AUTHENTICATOR"),
+        "token": _env("SNOWFLAKE_TOKEN"),
     }
+
+    if optional_settings["token"] and not optional_settings["authenticator"]:
+        optional_settings["authenticator"] = "oauth"
+
+    if (
+        not optional_settings["authenticator"]
+        and not optional_settings["password"]
+        and not optional_settings["token"]
+        and "connection_name" not in params
+    ):
+        optional_settings["authenticator"] = "externalbrowser"
+
+    params.update({key: value for key, value in optional_settings.items() if value})
+    return params
+
+
+def snowflake_connect():
+    params = build_snowflake_params()
 
     conn = snowflake.connector.connect(**params)
     conn.cursor().execute("SELECT CURRENT_USER()")
