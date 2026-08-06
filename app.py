@@ -29,6 +29,15 @@ OPPORTUNITY_OPTIONS = [
     "NO SALES - REVIEW SPACE",
     "OK",
 ]
+OPPORTUNITY_COLOR_MAP = {
+    "HIGH PRIORITY - ADD SPACE": "#d73027",
+    "ADD SPACE / REVIEW": "#fc8d59",
+    "SPACE DONOR - REDUCE SPACE": "#4575b4",
+    "HIGH WOS - REVIEW OVERSPACE": "#6a3d9a",
+    "NO SALES - REVIEW SPACE": "#1f78b4",
+    "OK": "#4d4d4d",
+    "Unlabelled": "#7f7f7f",
+}
 DEFAULT_OPPORTUNITIES = [value for value in OPPORTUNITY_OPTIONS if value != "OK"]
 DATE_COLUMNS = [
     "SALES_START_DATE",
@@ -299,6 +308,7 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
             orientation="h",
             title="Opportunity mix",
             color="Opportunity",
+            color_discrete_map=OPPORTUNITY_COLOR_MAP,
         )
         fig.update_layout(showlegend=False, height=430)
         st.plotly_chart(fig, use_container_width=True)
@@ -317,6 +327,7 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
             y="SALES_PER_CAPACITY_UNIT",
             size="ACTUAL_SALES_SIZE",
             color="Opportunity",
+            color_discrete_map=OPPORTUNITY_COLOR_MAP,
             hover_data=[
                 "ITEM_NUMBER",
                 "ITEM_DESCRIPTION",
