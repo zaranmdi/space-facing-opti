@@ -132,7 +132,17 @@ def filter_frame(frame: pd.DataFrame) -> pd.DataFrame:
         status_options = sorted(frame["CURRENT_ITEM_STATUS_CODE"].dropna().unique())
         grade_options = sorted(frame["ITEM_GRADE"].dropna().unique()) if "ITEM_GRADE" in frame.columns else []
         planogram_options = sorted(frame["PLANOGRAM_NAME"].dropna().unique()) if "PLANOGRAM_NAME" in frame.columns else []
+        department_options = sorted(frame["PLANOGRAM_DEPARTMENT_NAME"].dropna().unique()) if "PLANOGRAM_DEPARTMENT_NAME" in frame.columns else []
         location_type_options = sorted(frame["LOCATION_TYPE_CODE"].dropna().unique()) if "LOCATION_TYPE_CODE" in frame.columns else []
+        style_options = sorted(frame["MERCHANDISING_STYLE_CODE"].dropna().unique()) if "MERCHANDISING_STYLE_CODE" in frame.columns else []
+        sales_channel_options = [
+            option
+            for option in ["In-store", "Online"]
+            if (
+                (option == "In-store" and "INSTORE_SALES_QTY_52W" in frame.columns)
+                or (option == "Online" and "ONLINE_SALES_QTY_52W" in frame.columns)
+            )
+        ]
 
         selected_opportunities = st.multiselect(
             "Opportunity",
@@ -145,6 +155,16 @@ def filter_frame(frame: pd.DataFrame) -> pd.DataFrame:
             default=[value for value in status_options if value not in STATUS_EXCLUSIONS],
         )
         selected_grades = st.multiselect("Item grade", options=grade_options, default=grade_options)
+        selected_departments = st.multiselect(
+            "Department",
+            options=department_options,
+            default=department_options,
+        )
+        selected_styles = st.multiselect(
+            "Display / style",
+            options=style_options,
+            default=style_options,
+        )
         selected_location_types = st.multiselect(
             "Location type",
             options=location_type_options,
@@ -158,6 +178,11 @@ def filter_frame(frame: pd.DataFrame) -> pd.DataFrame:
         )
         store_search = st.text_input("Store code or name contains")
         item_search = st.text_input("Item number or description contains")
+        selected_sales_channels = st.multiselect(
+            "Sales channel activity",
+            options=sales_channel_options,
+            default=sales_channel_options,
+        )
         active_weeks = st.slider(
             "Minimum active weeks",
             min_value=0,
@@ -174,10 +199,25 @@ def filter_frame(frame: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["CURRENT_ITEM_STATUS_CODE"].isin(selected_statuses)]
     if selected_grades and "ITEM_GRADE" in filtered.columns:
         filtered = filtered[filtered["ITEM_GRADE"].isin(selected_grades)]
+    if selected_departments and "PLANOGRAM_DEPARTMENT_NAME" in filtered.columns:
+        filtered = filtered[filtered["PLANOGRAM_DEPARTMENT_NAME"].isin(selected_departments)]
+    if selected_styles and "MERCHANDISING_STYLE_CODE" in filtered.columns:
+        filtered = filtered[filtered["MERCHANDISING_STYLE_CODE"].isin(selected_styles)]
     if selected_location_types and "LOCATION_TYPE_CODE" in filtered.columns:
         filtered = filtered[filtered["LOCATION_TYPE_CODE"].isin(selected_location_types)]
     if selected_planograms and "PLANOGRAM_NAME" in filtered.columns:
         filtered = filtered[filtered["PLANOGRAM_NAME"].isin(selected_planograms)]
+    if selected_sales_channels and len(selected_sales_channels) != len(sales_channel_options):
+        channel_masks: list[pd.Series] = []
+        if "In-store" in selected_sales_channels and "INSTORE_SALES_QTY_52W" in filtered.columns:
+            channel_masks.append(filtered["INSTORE_SALES_QTY_52W"].fillna(0) > 0)
+        if "Online" in selected_sales_channels and "ONLINE_SALES_QTY_52W" in filtered.columns:
+            channel_masks.append(filtered["ONLINE_SALES_QTY_52W"].fillna(0) > 0)
+        if channel_masks:
+            combined_mask = channel_masks[0]
+            for mask in channel_masks[1:]:
+                combined_mask = combined_mask | mask
+            filtered = filtered[combined_mask]
     if "ACTIVE_WEEKS" in filtered.columns:
         filtered = filtered[filtered["ACTIVE_WEEKS"].fillna(0) >= active_weeks]
     if not include_closed and "IS_CLOSED" in filtered.columns:
@@ -315,6 +355,28 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
         st.plotly_chart(fig, use_container_width=True)
 
     with lower_right:
+        sales_channel_totals = pd.DataFrame(
+            {
+                "Channel": ["In-store", "Online"],
+                "Sales Qty 52W": [
+                    item_location_frame.get("INSTORE_SALES_QTY_52W", pd.Series(dtype=float)).fillna(0).sum(),
+                    item_location_frame.get("ONLINE_SALES_QTY_52W", pd.Series(dtype=float)).fillna(0).sum(),
+                ],
+            }
+        )
+        fig = px.bar(
+            sales_channel_totals,
+            x="Channel",
+            y="Sales Qty 52W",
+            color="Channel",
+            title="In-store vs online sales quantity",
+            height=500,
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    lower_full = st.container()
+    with lower_full:
         top_planograms = (
             item_location_frame.groupby("PLANOGRAM_NAME", dropna=False)
             .agg(
@@ -351,6 +413,8 @@ def render_opportunity_table(item_location_frame: pd.DataFrame) -> None:
         "ITEM_NUMBER",
         "ITEM_DESCRIPTION",
         "ITEM_GRADE",
+        "PLANOGRAM_DEPARTMENT_NAME",
+        "MERCHANDISING_STYLE_CODE",
         "LOCATION_CODE",
         "LOCATION_NAME",
         "PLANOGRAM_NAME",
@@ -360,6 +424,8 @@ def render_opportunity_table(item_location_frame: pd.DataFrame) -> None:
         "WOS",
         "SALES_PER_CAPACITY_UNIT",
         "ACTUAL_SALES_QUANTITY",
+        "INSTORE_SALES_QTY_52W",
+        "ONLINE_SALES_QTY_52W",
         "ACTUAL_SALES_EXCLUDING_GST_52W",
         "FORECAST_ADJUSTED_QTY_52W",
         "NEEDS_MORE_SPACE_FLAG",
