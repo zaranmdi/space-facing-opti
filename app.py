@@ -6,10 +6,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from snowflakes import fetch_dataframe, snowflake_connect
 
-
-SQL_FILE = "space_opti_code.sql"
+DATA_GLOB = "space_opt_2_*.csv"
 STATUS_EXCLUSIONS = {
     "Deleted",
     "Quit (S1)",
@@ -85,16 +83,9 @@ def _normalise_bool(series: pd.Series) -> pd.Series:
     return mapped.fillna(False)
 
 
-def _sql_quote(value: str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def _sql_in_list(values: list[str]) -> str:
-    return ", ".join(_sql_quote(value) for value in values)
-
-
-def _parse_text_values(raw_value: str) -> list[str]:
-    return [value.strip() for value in raw_value.split(",") if value.strip()]
+def find_latest_dataset(base_dir: Path) -> Path | None:
+    matches = sorted(base_dir.glob(DATA_GLOB), key=lambda path: path.stat().st_mtime)
+    return matches[-1] if matches else None
 
 
 def prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -119,187 +110,93 @@ def prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return prepared
 
 
-def default_query_filters() -> dict[str, object]:
-    return {
-        "store_codes": "",
-        "item_numbers": "",
-        "item_search": "",
-        "location_search": "",
-        "planogram_search": "",
-        "item_grades": "",
-        "location_types": "",
-        "opportunities": DEFAULT_OPPORTUNITIES,
-        "min_active_weeks": 0,
-        "include_closed": False,
-        "include_excluded_statuses": False,
-        "row_limit": 100000,
-    }
+@st.cache_data(show_spinner=False)
+def load_dataset(source_name: str, file_bytes: bytes | None = None) -> pd.DataFrame:
+    if file_bytes is None and source_name.lower().endswith(".xlsx"):
+        frame = pd.read_excel(source_name)
+    elif file_bytes is None:
+        frame = pd.read_csv(source_name, low_memory=False)
+    elif source_name.lower().endswith(".xlsx"):
+        frame = pd.read_excel(pd.io.common.BytesIO(file_bytes))
+    else:
+        frame = pd.read_csv(pd.io.common.BytesIO(file_bytes), low_memory=False)
 
-
-def render_query_sidebar() -> dict[str, object]:
-    saved_filters = st.session_state.get("query_filters", default_query_filters())
-
-    with st.sidebar:
-        st.header("Snowflake Query")
-        st.caption("Queries run live against Snowflake using the SQL in space_opti_code.sql.")
-        clear_cache = st.button("Clear cached query results")
-        if clear_cache:
-            st.cache_data.clear()
-
-        with st.form("snowflake_filters"):
-            opportunities = st.multiselect(
-                "Opportunity",
-                options=OPPORTUNITY_OPTIONS,
-                default=saved_filters["opportunities"],
-            )
-            store_codes = st.text_input(
-                "Store codes",
-                value=str(saved_filters["store_codes"]),
-                help="Comma-separated, for example 7152, 8103, 7379",
-            )
-            item_numbers = st.text_input(
-                "Item numbers",
-                value=str(saved_filters["item_numbers"]),
-                help="Comma-separated exact item numbers",
-            )
-            item_search = st.text_input(
-                "Item description contains",
-                value=str(saved_filters["item_search"]),
-            )
-            location_search = st.text_input(
-                "Store name contains",
-                value=str(saved_filters["location_search"]),
-            )
-            planogram_search = st.text_input(
-                "Planogram name contains",
-                value=str(saved_filters["planogram_search"]),
-            )
-            item_grades = st.text_input(
-                "Item grades",
-                value=str(saved_filters["item_grades"]),
-                help="Comma-separated, for example A, B, C, D",
-            )
-            location_types = st.text_input(
-                "Location types",
-                value=str(saved_filters["location_types"]),
-                help="Comma-separated location type codes",
-            )
-            min_active_weeks = st.slider(
-                "Minimum active weeks",
-                min_value=0,
-                max_value=52,
-                value=int(saved_filters["min_active_weeks"]),
-            )
-            row_limit = st.number_input(
-                "Row limit",
-                min_value=1000,
-                max_value=500000,
-                value=int(saved_filters["row_limit"]),
-                step=1000,
-                help="Caps the returned Snowflake result set for responsiveness.",
-            )
-            include_closed = st.toggle(
-                "Include closed locations",
-                value=bool(saved_filters["include_closed"]),
-            )
-            include_excluded_statuses = st.toggle(
-                "Include excluded statuses",
-                value=bool(saved_filters["include_excluded_statuses"]),
-            )
-            submitted = st.form_submit_button("Run Snowflake query")
-
-    current_filters = {
-        "store_codes": store_codes,
-        "item_numbers": item_numbers,
-        "item_search": item_search,
-        "location_search": location_search,
-        "planogram_search": planogram_search,
-        "item_grades": item_grades,
-        "location_types": location_types,
-        "opportunities": opportunities,
-        "min_active_weeks": min_active_weeks,
-        "include_closed": include_closed,
-        "include_excluded_statuses": include_excluded_statuses,
-        "row_limit": int(row_limit),
-    }
-
-    if submitted or "query_filters" not in st.session_state:
-        st.session_state["query_filters"] = current_filters
-
-    return st.session_state["query_filters"]
-
-
-def build_live_sql(base_sql: str, filters: dict[str, object]) -> str:
-    predicates: list[str] = []
-
-    opportunities = [value for value in filters["opportunities"] if value]
-    if opportunities:
-        predicates.append(
-            f"SPACE_OPTIMIZATION_OPPORTUNITY IN ({_sql_in_list(opportunities)})"
-        )
-
-    if not filters["include_excluded_statuses"]:
-        predicates.append(
-            f"CURRENT_ITEM_STATUS_CODE NOT IN ({_sql_in_list(sorted(STATUS_EXCLUSIONS))})"
-        )
-
-    if not filters["include_closed"]:
-        predicates.append("COALESCE(IS_CLOSED, FALSE) = FALSE")
-
-    if int(filters["min_active_weeks"]):
-        predicates.append(f"COALESCE(ACTIVE_WEEKS, 0) >= {int(filters['min_active_weeks'])}")
-
-    store_codes = _parse_text_values(str(filters["store_codes"]))
-    if store_codes:
-        predicates.append(f"LOCATION_CODE IN ({_sql_in_list(store_codes)})")
-
-    item_numbers = _parse_text_values(str(filters["item_numbers"]))
-    if item_numbers:
-        predicates.append(f"ITEM_NUMBER IN ({_sql_in_list(item_numbers)})")
-
-    item_grades = _parse_text_values(str(filters["item_grades"]))
-    if item_grades:
-        predicates.append(f"ITEM_GRADE IN ({_sql_in_list(item_grades)})")
-
-    location_types = _parse_text_values(str(filters["location_types"]))
-    if location_types:
-        predicates.append(f"LOCATION_TYPE_CODE IN ({_sql_in_list(location_types)})")
-
-    if filters["item_search"]:
-        predicates.append(
-            f"ITEM_DESCRIPTION ILIKE {_sql_quote('%' + str(filters['item_search']).strip() + '%')}"
-        )
-
-    if filters["location_search"]:
-        predicates.append(
-            f"LOCATION_NAME ILIKE {_sql_quote('%' + str(filters['location_search']).strip() + '%')}"
-        )
-
-    if filters["planogram_search"]:
-        predicates.append(
-            f"PLANOGRAM_NAME ILIKE {_sql_quote('%' + str(filters['planogram_search']).strip() + '%')}"
-        )
-
-    clean_sql = base_sql.rstrip().rstrip(";").rstrip()
-    wrapped_sql = f"SELECT * FROM (\n{clean_sql}\n) dashboard"
-    if predicates:
-        wrapped_sql += "\nWHERE " + "\n  AND ".join(predicates)
-
-    wrapped_sql += (
-        "\nORDER BY DW_PLANOGRAM_ID, DW_LOCATION_ID, SALES_PER_CAPACITY_UNIT DESC"
-    )
-    wrapped_sql += f"\nLIMIT {int(filters['row_limit'])}"
-    return wrapped_sql
-
-
-@st.cache_data(show_spinner="Running Snowflake query...")
-def fetch_live_dataset(sql_text: str) -> pd.DataFrame:
-    conn = snowflake_connect()
-    try:
-        frame = fetch_dataframe(conn, sql_text)
-    finally:
-        conn.close()
     return prepare_frame(frame)
+
+
+def filter_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    with st.sidebar:
+        st.header("Filters")
+
+        opportunity_options = sorted(frame["SPACE_OPTIMIZATION_OPPORTUNITY"].dropna().unique())
+        status_options = sorted(frame["CURRENT_ITEM_STATUS_CODE"].dropna().unique())
+        grade_options = sorted(frame["ITEM_GRADE"].dropna().unique()) if "ITEM_GRADE" in frame.columns else []
+        planogram_options = sorted(frame["PLANOGRAM_NAME"].dropna().unique()) if "PLANOGRAM_NAME" in frame.columns else []
+        location_type_options = sorted(frame["LOCATION_TYPE_CODE"].dropna().unique()) if "LOCATION_TYPE_CODE" in frame.columns else []
+
+        selected_opportunities = st.multiselect(
+            "Opportunity",
+            options=opportunity_options,
+            default=[value for value in DEFAULT_OPPORTUNITIES if value in opportunity_options],
+        )
+        selected_statuses = st.multiselect(
+            "Current status",
+            options=status_options,
+            default=[value for value in status_options if value not in STATUS_EXCLUSIONS],
+        )
+        selected_grades = st.multiselect("Item grade", options=grade_options, default=grade_options)
+        selected_location_types = st.multiselect(
+            "Location type",
+            options=location_type_options,
+            default=location_type_options,
+        )
+        selected_planograms = st.multiselect(
+            "Planogram name",
+            options=planogram_options,
+            default=[],
+            placeholder="All planograms",
+        )
+        store_search = st.text_input("Store code or name contains")
+        item_search = st.text_input("Item number or description contains")
+        active_weeks = st.slider(
+            "Minimum active weeks",
+            min_value=0,
+            max_value=52,
+            value=0,
+        )
+        include_closed = st.toggle("Include closed locations", value=False)
+
+    filtered = frame.copy()
+
+    if selected_opportunities:
+        filtered = filtered[filtered["SPACE_OPTIMIZATION_OPPORTUNITY"].isin(selected_opportunities)]
+    if selected_statuses:
+        filtered = filtered[filtered["CURRENT_ITEM_STATUS_CODE"].isin(selected_statuses)]
+    if selected_grades and "ITEM_GRADE" in filtered.columns:
+        filtered = filtered[filtered["ITEM_GRADE"].isin(selected_grades)]
+    if selected_location_types and "LOCATION_TYPE_CODE" in filtered.columns:
+        filtered = filtered[filtered["LOCATION_TYPE_CODE"].isin(selected_location_types)]
+    if selected_planograms and "PLANOGRAM_NAME" in filtered.columns:
+        filtered = filtered[filtered["PLANOGRAM_NAME"].isin(selected_planograms)]
+    if "ACTIVE_WEEKS" in filtered.columns:
+        filtered = filtered[filtered["ACTIVE_WEEKS"].fillna(0) >= active_weeks]
+    if not include_closed and "IS_CLOSED" in filtered.columns:
+        filtered = filtered[~filtered["IS_CLOSED"].fillna(False)]
+
+    if store_search:
+        store_term = store_search.strip().lower()
+        filtered = filtered[
+            filtered["LOCATION_NAME"].fillna("").str.lower().str.contains(store_term)
+            | filtered["LOCATION_CODE"].fillna("").astype(str).str.lower().str.contains(store_term)
+        ]
+    if item_search:
+        item_term = item_search.strip().lower()
+        filtered = filtered[
+            filtered["ITEM_DESCRIPTION"].fillna("").str.lower().str.contains(item_term)
+            | filtered["ITEM_NUMBER"].fillna("").astype(str).str.lower().str.contains(item_term)
+        ]
+
+    return filtered
 
 
 def build_item_location_view(frame: pd.DataFrame) -> pd.DataFrame:
@@ -369,13 +266,24 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
     with chart_right:
         scatter = item_location_frame.copy()
         scatter["Opportunity"] = scatter["SPACE_OPTIMIZATION_OPPORTUNITY"].fillna("Unlabelled")
+        scatter["ACTUAL_SALES_SIZE"] = (
+            pd.to_numeric(scatter["ACTUAL_SALES_QUANTITY"], errors="coerce")
+            .fillna(0)
+            .clip(lower=0)
+        )
         fig = px.scatter(
             scatter,
             x="WOS",
             y="SALES_PER_CAPACITY_UNIT",
-            size="ACTUAL_SALES_QUANTITY",
+            size="ACTUAL_SALES_SIZE",
             color="Opportunity",
-            hover_data=["ITEM_NUMBER", "ITEM_DESCRIPTION", "LOCATION_NAME", "PLANOGRAM_NAME"],
+            hover_data=[
+                "ITEM_NUMBER",
+                "ITEM_DESCRIPTION",
+                "LOCATION_NAME",
+                "PLANOGRAM_NAME",
+                "ACTUAL_SALES_QUANTITY",
+            ],
             title="WOS vs sales per capacity unit",
             height=430,
         )
@@ -500,48 +408,30 @@ def render_store_summary(item_location_frame: pd.DataFrame) -> None:
 
 def main() -> None:
     base_dir = Path(__file__).resolve().parent
-    sql_path = base_dir / SQL_FILE
+    latest_dataset = find_latest_dataset(base_dir)
 
     st.title("Kitchen Space Optimisation Dashboard")
     st.caption(
         "Interactive review of space optimisation outputs across planograms, stores, and item-locations. "
-        "The app now queries Snowflake live and applies the notebook's inactive-status exclusions by default."
+        "The app uses a local optimisation extract or an uploaded file and applies the notebook's inactive-status exclusions by default."
     )
 
-    query_filters = render_query_sidebar()
+    with st.sidebar:
+        st.header("Source")
+        uploaded_file = st.file_uploader("Upload optimisation extract", type=["csv", "xlsx"])
+        source_label = uploaded_file.name if uploaded_file is not None else (latest_dataset.name if latest_dataset else "No local extract found")
+        st.caption(f"Current source: {source_label}")
 
-    if not sql_path.exists():
-        st.error(f"SQL file not found: {sql_path}")
+    if uploaded_file is not None:
+        frame = load_dataset(uploaded_file.name, uploaded_file.getvalue())
+    elif latest_dataset is not None:
+        frame = load_dataset(str(latest_dataset))
+    else:
+        st.error("No local optimisation CSV found. Upload a CSV or Excel extract to continue.")
         return
 
-    base_sql = sql_path.read_text(encoding="utf-8")
-    live_sql = build_live_sql(base_sql, query_filters)
-
-    with st.expander("Current Snowflake query settings", expanded=False):
-        st.write({
-            "store_codes": query_filters["store_codes"],
-            "item_numbers": query_filters["item_numbers"],
-            "item_search": query_filters["item_search"],
-            "location_search": query_filters["location_search"],
-            "planogram_search": query_filters["planogram_search"],
-            "item_grades": query_filters["item_grades"],
-            "location_types": query_filters["location_types"],
-            "opportunities": query_filters["opportunities"],
-            "min_active_weeks": query_filters["min_active_weeks"],
-            "include_closed": query_filters["include_closed"],
-            "include_excluded_statuses": query_filters["include_excluded_statuses"],
-            "row_limit": query_filters["row_limit"],
-        })
-
-    frame = fetch_live_dataset(live_sql)
-
-    if len(frame) >= int(query_filters["row_limit"]):
-        st.warning(
-            "The returned dataset hit the configured row limit. Narrow the Snowflake filters or increase the cap before treating the dashboard totals as complete."
-        )
-
-    filtered_rows = frame
-    item_location_view = build_item_location_view(frame)
+    filtered_rows = filter_frame(frame)
+    item_location_view = build_item_location_view(filtered_rows)
 
     if filtered_rows.empty:
         st.warning("No rows match the current filters.")

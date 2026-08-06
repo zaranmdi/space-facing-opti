@@ -1,10 +1,10 @@
 # Space Facing Optimisation Dashboard
 
-Streamlit dashboard for reviewing kitchen department space optimisation outputs from Snowflake.
+Streamlit dashboard for reviewing kitchen department space optimisation outputs from CSV or Excel extracts.
 
 ## What it does
 
-- Runs the optimisation SQL from `space_opti_code.sql` against Snowflake.
+- Loads the latest local `space_opt_2_*.csv` extract or a manually uploaded CSV or Excel file.
 - Surfaces space-add, donor, high-WOS, and no-sales opportunities.
 - Summarises opportunities across planograms, stores, and item-locations.
 
@@ -22,26 +22,12 @@ Streamlit dashboard for reviewing kitchen department space optimisation outputs 
    py -3 -m streamlit run app.py
    ```
 
-## Snowflake access
+## Data source
 
-The app uses the connection helper in `snowflakes.py`. Do not commit credentials or secret files.
+The app is currently file-based. It does not require Snowflake credentials.
 
-For hosted deployments, configure Snowflake credentials through environment variables. The helper supports password, named-connection, or OAuth-style non-interactive auth. If no non-interactive settings are present, local runs fall back to `externalbrowser`.
-
-## Azure App Service
-
-Azure App Service deployment steps are documented in `DEPLOY_AZURE_APP_SERVICE.md`.
-
-The repo includes `startup.sh` for the App Service startup command.
-
-GitHub Actions deployment is available in `.github/workflows/deploy-azure-app-service.yml`.
-
-## Streamlit Community Cloud
-
-Streamlit Community Cloud deployment steps are documented in `DEPLOY_STREAMLIT_CLOUD.md`.
-
-Use `streamlit_secrets.example.toml` as the template for hosted Streamlit secrets.
+For hosted Streamlit use, either commit a safe sample extract or upload a file through the app after it starts.
 
 ## Repository notes
 
-Local CSV and Excel extracts are ignored by Git because the dashboard is intended to query Snowflake live.
+Local CSV and Excel extracts are ignored by Git by default.
