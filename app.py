@@ -6,6 +6,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder
+except Exception:  # pragma: no cover - fallback when dependency is unavailable.
+    AgGrid = None
+    GridOptionsBuilder = None
+
 
 DATA_GLOB = "space_opt_2_*.csv"
 STATUS_EXCLUSIONS = {
@@ -294,6 +300,39 @@ def build_planogram_item_location_view(frame: pd.DataFrame) -> pd.DataFrame:
     return ranked.drop_duplicates(subset=PLANOGRAM_ITEM_LOCATION_KEY, keep="first").copy()
 
 
+def render_filterable_table(
+    frame: pd.DataFrame,
+    *,
+    height: int = 620,
+    key: str,
+) -> None:
+    if AgGrid is None or GridOptionsBuilder is None:
+        st.info("Install `streamlit-aggrid` to enable per-column table filters.")
+        st.dataframe(frame, width="stretch", height=height)
+        return
+
+    grid_builder = GridOptionsBuilder.from_dataframe(frame)
+    grid_builder.configure_default_column(
+        sortable=True,
+        filter=True,
+        floatingFilter=True,
+        resizable=True,
+    )
+    grid_builder.configure_grid_options(
+        animateRows=False,
+        suppressFieldDotNotation=True,
+    )
+    AgGrid(
+        frame,
+        gridOptions=grid_builder.build(),
+        theme="streamlit",
+        height=height,
+        fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=False,
+        key=key,
+    )
+
+
 def metric_card_columns(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) -> None:
     needs_more = int(item_location_frame.get("NEEDS_MORE_SPACE_FLAG", pd.Series(dtype=bool)).fillna(False).sum())
     donors = int(item_location_frame.get("POSSIBLE_SPACE_DONOR_FLAG", pd.Series(dtype=bool)).fillna(False).sum())
@@ -490,7 +529,11 @@ def render_opportunity_table(item_location_frame: pd.DataFrame) -> None:
         "POSSIBLE_SPACE_DONOR_FLAG",
     ]
     visible_columns = [column for column in columns if column in ranked.columns]
-    st.dataframe(ranked[visible_columns], use_container_width=True, height=620)
+    render_filterable_table(
+        ranked[visible_columns],
+        height=620,
+        key="opportunities_table",
+    )
 
 
 def render_planogram_summary(planogram_frame: pd.DataFrame) -> None:
@@ -510,7 +553,7 @@ def render_planogram_summary(planogram_frame: pd.DataFrame) -> None:
         .reset_index()
         .sort_values(["needs_more_space", "actual_sales"], ascending=[False, False])
     )
-    st.dataframe(summary, use_container_width=True, height=620)
+    render_filterable_table(summary, height=620, key="planogram_summary_table")
 
 
 def render_store_summary(item_location_frame: pd.DataFrame) -> None:
@@ -527,7 +570,7 @@ def render_store_summary(item_location_frame: pd.DataFrame) -> None:
         .reset_index()
         .sort_values(["needs_more_space", "sales"], ascending=[False, False])
     )
-    st.dataframe(summary, use_container_width=True, height=620)
+    render_filterable_table(summary, height=620, key="store_summary_table")
 
 
 def main() -> None:
@@ -580,7 +623,7 @@ def main() -> None:
 
     with raw_tab:
         st.caption("Raw row-level view. This includes merchandising-style duplicates from the export.")
-        st.dataframe(filtered_rows, use_container_width=True, height=620)
+        render_filterable_table(filtered_rows, height=620, key="raw_data_table")
         st.download_button(
             "Download filtered rows as CSV",
             filtered_rows.to_csv(index=False).encode("utf-8"),
