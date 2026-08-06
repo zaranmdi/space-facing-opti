@@ -386,26 +386,43 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
         fig.update_layout(showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    lower_full = st.container()
-    with lower_full:
-        top_planograms = (
-            item_location_frame.groupby("PLANOGRAM_NAME", dropna=False)
-            .agg(
-                item_locations=("DW_ITEM_ID", "count"),
-                needs_more_space=("NEEDS_MORE_SPACE_FLAG", "sum"),
-                possible_donors=("POSSIBLE_SPACE_DONOR_FLAG", "sum"),
-            )
-            .reset_index()
-            .sort_values("needs_more_space", ascending=False)
-            .head(15)
+    planogram_left, planogram_right = st.columns(2)
+    top_planograms = (
+        item_location_frame.groupby("PLANOGRAM_NAME", dropna=False)
+        .agg(
+            item_locations=("DW_ITEM_ID", "count"),
+            needs_more_space=("NEEDS_MORE_SPACE_FLAG", "sum"),
+            possible_donors=("POSSIBLE_SPACE_DONOR_FLAG", "sum"),
+        )
+        .reset_index()
+    )
+
+    with planogram_left:
+        add_space_planograms = (
+            top_planograms.sort_values("needs_more_space", ascending=False).head(15)
         )
         fig = px.bar(
-            top_planograms,
+            add_space_planograms,
             x="needs_more_space",
             y="PLANOGRAM_NAME",
             orientation="h",
             hover_data=["item_locations", "possible_donors"],
             title="Planograms with the most space-add opportunities",
+            height=500,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with planogram_right:
+        reduce_space_planograms = (
+            top_planograms.sort_values("possible_donors", ascending=False).head(15)
+        )
+        fig = px.bar(
+            reduce_space_planograms,
+            x="possible_donors",
+            y="PLANOGRAM_NAME",
+            orientation="h",
+            hover_data=["item_locations", "needs_more_space"],
+            title="Planograms with the most space-reduce opportunities",
             height=500,
         )
         st.plotly_chart(fig, use_container_width=True)
