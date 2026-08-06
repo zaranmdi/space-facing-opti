@@ -34,6 +34,8 @@ Azure App Service deployment steps are documented in `DEPLOY_AZURE_APP_SERVICE.m
 
 The repo includes `startup.sh` for the App Service startup command.
 
+GitHub Actions deployment is available in `.github/workflows/deploy-azure-app-service.yml`.
+
 ## Repository notes
 
 Local CSV and Excel extracts are ignored by Git because the dashboard is intended to query Snowflake live.
