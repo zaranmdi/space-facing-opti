@@ -76,6 +76,7 @@ BOOL_COLUMNS = [
     "POSSIBLE_SPACE_DONOR_FLAG",
 ]
 ITEM_LOCATION_KEY = ["DW_ITEM_ID", "DW_LOCATION_ID"]
+PLANOGRAM_ITEM_LOCATION_KEY = ["DW_PLANOGRAM_ID", "DW_ITEM_ID", "DW_LOCATION_ID"]
 
 
 st.set_page_config(
@@ -273,6 +274,26 @@ def build_item_location_view(frame: pd.DataFrame) -> pd.DataFrame:
     return deduped
 
 
+def build_planogram_item_location_view(frame: pd.DataFrame) -> pd.DataFrame:
+    if not set(PLANOGRAM_ITEM_LOCATION_KEY).issubset(frame.columns):
+        return frame.copy()
+
+    preferred_order = [
+        "NEEDS_MORE_SPACE_FLAG",
+        "POSSIBLE_SPACE_DONOR_FLAG",
+        "LOW_WOS_FLAG",
+        "LOW_PACK_ON_SHOW_FLAG",
+        "ACTUAL_SALES_EXCLUDING_GST_52W",
+    ]
+    available_order = [column for column in preferred_order if column in frame.columns]
+    ranked = (
+        frame.sort_values(available_order, ascending=[False] * len(available_order))
+        if available_order
+        else frame.copy()
+    )
+    return ranked.drop_duplicates(subset=PLANOGRAM_ITEM_LOCATION_KEY, keep="first").copy()
+
+
 def metric_card_columns(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) -> None:
     needs_more = int(item_location_frame.get("NEEDS_MORE_SPACE_FLAG", pd.Series(dtype=bool)).fillna(False).sum())
     donors = int(item_location_frame.get("POSSIBLE_SPACE_DONOR_FLAG", pd.Series(dtype=bool)).fillna(False).sum())
@@ -292,7 +313,11 @@ def metric_card_columns(item_location_frame: pd.DataFrame, row_frame: pd.DataFra
     st.caption(f"Low WOS item-locations: {low_wos:,}. KPI measures use a deduped item-location view to avoid double-counting duplicated merchandising-style rows.")
 
 
-def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) -> None:
+def render_overview(
+    item_location_frame: pd.DataFrame,
+    planogram_frame: pd.DataFrame,
+    row_frame: pd.DataFrame,
+) -> None:
     metric_card_columns(item_location_frame, row_frame)
 
     chart_left, chart_right = st.columns(2)
@@ -388,7 +413,7 @@ def render_overview(item_location_frame: pd.DataFrame, row_frame: pd.DataFrame) 
 
     planogram_left, planogram_right = st.columns(2)
     top_planograms = (
-        item_location_frame.groupby(["PLANOGRAM_ID", "PLANOGRAM_NAME"], dropna=False)
+        planogram_frame.groupby(["PLANOGRAM_ID", "PLANOGRAM_NAME"], dropna=False)
         .agg(
             item_locations=("DW_ITEM_ID", "count"),
             needs_more_space=("NEEDS_MORE_SPACE_FLAG", "sum"),
@@ -468,9 +493,9 @@ def render_opportunity_table(item_location_frame: pd.DataFrame) -> None:
     st.dataframe(ranked[visible_columns], use_container_width=True, height=620)
 
 
-def render_planogram_summary(item_location_frame: pd.DataFrame) -> None:
+def render_planogram_summary(planogram_frame: pd.DataFrame) -> None:
     summary = (
-        item_location_frame.groupby(
+        planogram_frame.groupby(
             ["PLANOGRAM_ID", "PLANOGRAM_NAME", "PLANOGRAM_DEPARTMENT_NAME"],
             dropna=False,
         )
@@ -531,6 +556,7 @@ def main() -> None:
 
     filtered_rows = filter_frame(frame)
     item_location_view = build_item_location_view(filtered_rows)
+    planogram_item_location_view = build_planogram_item_location_view(filtered_rows)
 
     if filtered_rows.empty:
         st.warning("No rows match the current filters.")
@@ -541,13 +567,13 @@ def main() -> None:
     )
 
     with overview_tab:
-        render_overview(item_location_view, filtered_rows)
+        render_overview(item_location_view, planogram_item_location_view, filtered_rows)
 
     with opportunities_tab:
         render_opportunity_table(item_location_view)
 
     with planograms_tab:
-        render_planogram_summary(item_location_view)
+        render_planogram_summary(planogram_item_location_view)
 
     with stores_tab:
         render_store_summary(item_location_view)
