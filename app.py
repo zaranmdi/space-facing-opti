@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - fallback when dependency is unavailable.
     GridOptionsBuilder = None
 
 
+PREFERRED_DATASET_NAME = "samp_2026-08-07-1232.csv"
 DATA_GLOB = "space_opt_2_*.csv"
 STATUS_EXCLUSIONS = {
     "Deleted",
@@ -101,6 +102,10 @@ def _normalise_bool(series: pd.Series) -> pd.Series:
 
 
 def find_latest_dataset(base_dir: Path) -> Path | None:
+    preferred_dataset = base_dir / PREFERRED_DATASET_NAME
+    if preferred_dataset.exists():
+        return preferred_dataset
+
     matches = sorted(base_dir.glob(DATA_GLOB), key=lambda path: path.stat().st_mtime)
     return matches[-1] if matches else None
 

@@ -229,6 +229,81 @@ def fetch_planogram_layout(
     return frame
 
 
+def prepare_planogram_layout_for_streamlit(layout_frame: pd.DataFrame) -> pd.DataFrame:
+    prepared = layout_frame.copy()
+
+    numeric_columns = ["X", "Y", "WIDTH", "HEIGHT", "CAPACITY", "FACINGS", "HFACINGS", "VFACINGS"]
+    for column in numeric_columns:
+        if column in prepared.columns:
+            prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
+
+    rename_map = {
+        "PRODUCT_ID": "ITEM_NUMBER",
+        "PRODUCT_NAME": "ITEM_DESCRIPTION",
+        "MERCHSTYLE": "MERCHANDISING_STYLE_CODE",
+    }
+    for source, target in rename_map.items():
+        if source in prepared.columns and target not in prepared.columns:
+            prepared[target] = prepared[source]
+
+    required = ["PLANOGRAM_ID", "PLANOGRAM_NAME", "X", "Y", "WIDTH", "HEIGHT"]
+    missing = [column for column in required if column not in prepared.columns]
+    if missing:
+        raise ValueError(
+            "Missing required layout columns for Streamlit polygons: " + ", ".join(missing)
+        )
+
+    prepared["LAYOUT_GEOMETRY_VALID"] = (
+        prepared["X"].notna()
+        & prepared["Y"].notna()
+        & prepared["WIDTH"].notna()
+        & prepared["HEIGHT"].notna()
+        & (prepared["WIDTH"] > 0)
+        & (prepared["HEIGHT"] > 0)
+    )
+    return prepared
+
+
+def fetch_planogram_item_geometry(
+    conn,
+    planogram_identifier: str | int,
+) -> pd.DataFrame:
+    """Return one geometry row per item-position with required layout columns first."""
+    layout = fetch_planogram_layout(conn, planogram_identifier)
+    prepared = prepare_planogram_layout_for_streamlit(layout)
+
+    ordered_columns = [
+        "PLANOGRAM_ID",
+        "PLANOGRAM_NAME",
+        "ITEM_NUMBER",
+        "ITEM_DESCRIPTION",
+        "MERCHANDISING_STYLE_CODE",
+        "X",
+        "Y",
+        "WIDTH",
+        "HEIGHT",
+        "CAPACITY",
+        "FACINGS",
+        "HFACINGS",
+        "VFACINGS",
+        "SPACE_OPTIMIZATION_OPPORTUNITY",
+        "LAYOUT_GEOMETRY_VALID",
+    ]
+    available_columns = [column for column in ordered_columns if column in prepared.columns]
+    remaining_columns = [column for column in prepared.columns if column not in available_columns]
+    geometry_frame = prepared[available_columns + remaining_columns].copy()
+
+    dedupe_keys = [
+        column
+        for column in ["PLANOGRAM_ID", "ITEM_NUMBER", "MERCHANDISING_STYLE_CODE", "X", "Y", "WIDTH", "HEIGHT"]
+        if column in geometry_frame.columns
+    ]
+    if dedupe_keys:
+        geometry_frame = geometry_frame.drop_duplicates(subset=dedupe_keys, keep="first")
+
+    return geometry_frame
+
+
 def _rotate_points(
     points: list[tuple[float, float]],
     center_x: float,
@@ -267,23 +342,24 @@ def build_position_polygon(position_row: pd.Series) -> list[tuple[float, float]]
             (min_x, max_y),
         ]
     else:
-        center_x = float(position_row.get("X", 0) or 0)
-        center_y = float(position_row.get("Y", 0) or 0)
+        # IX_SPC_POSITION X/Y represent bottom-left, not center coordinates.
+        min_x = float(position_row.get("X", 0) or 0)
+        min_y = float(position_row.get("Y", 0) or 0)
         width = float(position_row.get("WIDTH", 0) or 0)
         height = float(position_row.get("HEIGHT", 0) or 0)
-        half_width = width / 2
-        half_height = height / 2
+        max_x = min_x + width
+        max_y = min_y + height
         points = [
-            (center_x - half_width, center_y - half_height),
-            (center_x + half_width, center_y - half_height),
-            (center_x + half_width, center_y + half_height),
-            (center_x - half_width, center_y + half_height),
+            (min_x, min_y),
+            (max_x, min_y),
+            (max_x, max_y),
+            (min_x, max_y),
         ]
 
     angle = float(position_row.get("ANGLE", 0) or 0)
     if angle:
-        center_x = float(position_row.get("X", sum(x for x, _ in points) / 4) or 0)
-        center_y = float(position_row.get("Y", sum(y for _, y in points) / 4) or 0)
+        center_x = sum(x for x, _ in points) / len(points)
+        center_y = sum(y for _, y in points) / len(points)
         points = _rotate_points(points, center_x, center_y, angle)
 
     return points
