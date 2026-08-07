@@ -13,7 +13,7 @@ permissions:
 env:
   AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
   AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-  PYTHON_VERSION: '3.14'
+  PYTHON_VERSION: '3.12'
 
 concurrency:
   group: azure-app-service-${{ github.ref }}
@@ -26,6 +26,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate required Azure configuration
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          missing=0
+          for name in AZURE_WEBAPP_NAME AZURE_RESOURCE_GROUP AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required GitHub variable/secret: $name"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Set repository Variables: AZURE_WEBAPP_NAME, AZURE_RESOURCE_GROUP"
+            echo "::error::Set repository Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID"
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
