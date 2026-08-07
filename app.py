@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 try:
@@ -298,6 +299,170 @@ def build_planogram_item_location_view(frame: pd.DataFrame) -> pd.DataFrame:
         else frame.copy()
     )
     return ranked.drop_duplicates(subset=PLANOGRAM_ITEM_LOCATION_KEY, keep="first").copy()
+
+
+def _first_existing_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in frame.columns:
+            return candidate
+    return None
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    color = (hex_color or "").strip().lstrip("#")
+    if len(color) != 6:
+        return f"rgba(127,127,127,{alpha})"
+    red = int(color[0:2], 16)
+    green = int(color[2:4], 16)
+    blue = int(color[4:6], 16)
+    return f"rgba({red},{green},{blue},{alpha})"
+
+
+def render_planogram_layout(row_frame: pd.DataFrame) -> None:
+    if row_frame.empty:
+        st.warning("No rows match the current filters.")
+        return
+
+    x_col = _first_existing_column(row_frame, ["X", "x"])
+    y_col = _first_existing_column(row_frame, ["Y", "y"])
+    width_col = _first_existing_column(row_frame, ["WIDTH", "width"])
+    height_col = _first_existing_column(row_frame, ["HEIGHT", "height"])
+
+    required_cols = [x_col, y_col, width_col, height_col]
+    if any(column is None for column in required_cols):
+        missing = [
+            name
+            for name, column in {
+                "X": x_col,
+                "Y": y_col,
+                "WIDTH": width_col,
+                "HEIGHT": height_col,
+            }.items()
+            if column is None
+        ]
+        st.warning(
+            "Layout columns are missing in the current dataset: "
+            + ", ".join(missing)
+            + "."
+        )
+        st.caption(
+            "Refresh your extract to include ix_spc_position coordinates so this tab can render product blocks."
+        )
+        return
+
+    if "PLANOGRAM_ID" not in row_frame.columns:
+        st.warning("PLANOGRAM_ID is missing in the current dataset, so planogram layout cannot be filtered.")
+        return
+
+    layout = row_frame.copy()
+    layout["PLANOGRAM_ID"] = layout["PLANOGRAM_ID"].astype(str).str.strip()
+    if "PLANOGRAM_NAME" in layout.columns:
+        layout["PLANOGRAM_NAME"] = layout["PLANOGRAM_NAME"].fillna("").astype(str).str.strip()
+    else:
+        layout["PLANOGRAM_NAME"] = ""
+
+    layout["PLANOGRAM_LABEL"] = layout["PLANOGRAM_ID"] + " - " + layout["PLANOGRAM_NAME"]
+    planogram_labels = sorted(label for label in layout["PLANOGRAM_LABEL"].dropna().unique() if str(label).strip())
+    if not planogram_labels:
+        st.warning("No planograms are available after filtering.")
+        return
+
+    selected_planogram = st.selectbox(
+        "Choose planogram",
+        options=planogram_labels,
+        key="planogram_layout_selector",
+    )
+
+    selected = layout[layout["PLANOGRAM_LABEL"] == selected_planogram].copy()
+    selected["_x"] = pd.to_numeric(selected[x_col], errors="coerce")
+    selected["_y"] = pd.to_numeric(selected[y_col], errors="coerce")
+    selected["_w"] = pd.to_numeric(selected[width_col], errors="coerce")
+    selected["_h"] = pd.to_numeric(selected[height_col], errors="coerce")
+
+    selected = selected[
+        selected["_x"].notna()
+        & selected["_y"].notna()
+        & selected["_w"].notna()
+        & selected["_h"].notna()
+        & (selected["_w"] > 0)
+        & (selected["_h"] > 0)
+    ]
+
+    if selected.empty:
+        st.warning("No valid geometry rows were found for the selected planogram.")
+        return
+
+    selected["_x2"] = selected["_x"] + selected["_w"]
+    selected["_y2"] = selected["_y"] + selected["_h"]
+
+    show_labels = st.toggle("Show item labels", value=False, key="planogram_layout_show_labels")
+    figure = go.Figure()
+
+    for _, row in selected.iterrows():
+        x0 = float(row["_x"])
+        y0 = float(row["_y"])
+        x1 = float(row["_x2"])
+        y1 = float(row["_y2"])
+        xs = [x0, x1, x1, x0, x0]
+        ys = [y0, y0, y1, y1, y0]
+
+        opportunity = row.get("SPACE_OPTIMIZATION_OPPORTUNITY", "Unlabelled")
+        base_color = OPPORTUNITY_COLOR_MAP.get(opportunity, OPPORTUNITY_COLOR_MAP["Unlabelled"])
+        item_number = str(row.get("ITEM_NUMBER", ""))
+        item_description = str(row.get("ITEM_DESCRIPTION", ""))
+        style = str(row.get("MERCHANDISING_STYLE_CODE", ""))
+        facings = row.get("CAPACITY", "")
+
+        hover_template = (
+            f"<b>{item_number}</b><br>"
+            f"{item_description}<br>"
+            f"Style: {style}<br>"
+            f"Capacity: {facings}<br>"
+            f"Opportunity: {opportunity}<br>"
+            f"X,Y: ({x0:.2f}, {y0:.2f})<br>"
+            f"W,H: ({float(row['_w']):.2f}, {float(row['_h']):.2f})"
+            "<extra></extra>"
+        )
+
+        figure.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                line={"width": 1, "color": base_color},
+                fill="toself",
+                fillcolor=_hex_to_rgba(base_color, 0.25),
+                hovertemplate=hover_template,
+                showlegend=False,
+            )
+        )
+
+        if show_labels:
+            figure.add_trace(
+                go.Scatter(
+                    x=[x0 + (x1 - x0) / 2],
+                    y=[y0 + (y1 - y0) / 2],
+                    mode="text",
+                    text=[item_number],
+                    textfont={"size": 9},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+    figure.update_layout(
+        title=f"2D Product Layout | {selected_planogram}",
+        xaxis_title="X",
+        yaxis_title="Y",
+        xaxis={"scaleanchor": "y", "scaleratio": 1},
+        template="plotly_white",
+        height=760,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+    )
+    st.plotly_chart(figure, use_container_width=True)
+    st.caption(
+        f"Rendered {len(selected):,} product blocks using bottom-left coordinates with width/height from ix_spc_position."
+    )
 
 
 def render_filterable_table(
@@ -605,8 +770,8 @@ def main() -> None:
         st.warning("No rows match the current filters.")
         return
 
-    overview_tab, opportunities_tab, planograms_tab, stores_tab, raw_tab = st.tabs(
-        ["Overview", "Opportunities", "Planograms", "Stores", "Raw data"]
+    overview_tab, opportunities_tab, planograms_tab, layout_tab, stores_tab, raw_tab = st.tabs(
+        ["Overview", "Opportunities", "Planograms", "Planogram layout", "Stores", "Raw data"]
     )
 
     with overview_tab:
@@ -617,6 +782,9 @@ def main() -> None:
 
     with planograms_tab:
         render_planogram_summary(planogram_item_location_view)
+
+    with layout_tab:
+        render_planogram_layout(filtered_rows)
 
     with stores_tab:
         render_store_summary(item_location_view)

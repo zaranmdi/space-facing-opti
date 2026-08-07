@@ -1,17 +1,7 @@
--- WITH params AS (
---     SELECT
---         DATE '2026-07-30' AS sales_end_date,
---         DATEADD(WEEK, -52, DATE '2026-07-30') AS sales_start_date
--- ),
-
 WITH params AS (
     SELECT
-        DATEADD(day, -1, CURRENT_DATE()) AS sales_end_date,
-        DATEADD(
-            week,
-            -52,
-            DATEADD(day, -1, CURRENT_DATE())
-        ) AS sales_start_date
+        DATE '2026-08-05' AS sales_end_date,
+        DATEADD(WEEK, -52, DATE '2026-08-05') AS sales_start_date
 ),
 
 /* ---------------------------------------------------------
@@ -25,10 +15,10 @@ live_planograms AS (
         MAX(PLANOGRAM_DEPARTMENT_NAME) AS PLANOGRAM_DEPARTMENT_NAME
     FROM BDWPRD_CDS.SPACE_PLANNING.PLANOGRAM_DIM
     WHERE PLANOGRAM_STATUS_CODE = 'LIVE'
-      AND PLANOGRAM_DEPARTMENT_NAME IN (
-            -- 'KITCHEN BATH & SPECIAL ORDERS',
-            '300 KITCHEN AND APPLIANCES'
-      )
+      -- AND PLANOGRAM_DEPARTMENT_NAME IN (
+      --       -- 'KITCHEN BATH & SPECIAL ORDERS',
+      --       '300 KITCHEN AND APPLIANCES'
+      -- )
       AND PLANOGRAM_EFFECTIVE_TO_DATE is null -- check this with PK and Andrew
     GROUP BY
         DW_PLANOGRAM_ID
@@ -41,73 +31,168 @@ item_grade AS (
     SELECT
         COUNTRY_CODE,
         item_number,
-        item_grade,
-        facings,
-        hfacings,
-        vfacings
+        item_grade
     FROM (
         SELECT
-            pr.DESC1 AS COUNTRY_CODE,
-            REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '') AS item_number,
-            pr.DESC8 AS item_grade,
-            ps.facings,
-            ps.hfacings,
-            ps.vfacings,
+            DESC1 AS COUNTRY_CODE,
+            REPLACE(REPLACE(ID, '-AU', ''), '-NZ', '') AS item_number,
+            DESC8 AS item_grade,
+            DW_REC_DEL_IND,
             ROW_NUMBER() OVER (
                 PARTITION BY
-                    pr.DESC1,
-                    REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '')
-                ORDER BY pr.DW_STRT_TS DESC
-            ) AS rn
-        FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_PRODUCT pr
-        LEFT JOIN (
-            SELECT
-                dbparentproductkey,
-                facings,
-                hfacings,
-                vfacings
-            FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_POSITION
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY DBKey
+                    DESC1,
+                    REPLACE(REPLACE(ID, '-AU', ''), '-NZ', '')
                 ORDER BY DW_STRT_TS DESC
-            ) = 1
-            AND DW_REC_DEL_IND = FALSE
-        ) ps
-            ON pr.DBKey = ps.dbparentproductkey
-        WHERE pr.DW_REC_DEL_IND = FALSE
+            ) AS rn
+        FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_PRODUCT
     )
     WHERE rn = 1
+      AND DW_REC_DEL_IND = FALSE
 ),
 
 /* ---------------------------------------------------------
+   BlueYonder planogram item polygon from position x/y
+--------------------------------------------------------- */
+planogram_item_polygon AS (
+    SELECT
+        planogram_id,
+        country_code,
+        item_number,
+        CONCAT(
+            'POLYGON((',
+            TO_VARCHAR(x1), ' ', TO_VARCHAR(y1), ', ',
+            TO_VARCHAR(x2), ' ', TO_VARCHAR(y2), ', ',
+            TO_VARCHAR(x3), ' ', TO_VARCHAR(y3), ', ',
+            TO_VARCHAR(x4), ' ', TO_VARCHAR(y4), ', ',
+            TO_VARCHAR(x1), ' ', TO_VARCHAR(y1),
+            '))'
+        ) AS polygon
+    FROM (
+        SELECT
+            planogram_id,
+            country_code,
+            item_number,
+            ((x_min - x_center) * COS(RADIANS(angle)) - (y_min - y_center) * SIN(RADIANS(angle))) + x_center AS x1,
+            ((x_max - x_center) * COS(RADIANS(angle)) - (y_min - y_center) * SIN(RADIANS(angle))) + x_center AS x2,
+            ((x_max - x_center) * COS(RADIANS(angle)) - (y_max - y_center) * SIN(RADIANS(angle))) + x_center AS x3,
+            ((x_min - x_center) * COS(RADIANS(angle)) - (y_max - y_center) * SIN(RADIANS(angle))) + x_center AS x4,
+            ((x_min - x_center) * SIN(RADIANS(angle)) + (y_min - y_center) * COS(RADIANS(angle))) + y_center AS y1,
+            ((x_max - x_center) * SIN(RADIANS(angle)) + (y_min - y_center) * COS(RADIANS(angle))) + y_center AS y2,
+            ((x_max - x_center) * SIN(RADIANS(angle)) + (y_max - y_center) * COS(RADIANS(angle))) + y_center AS y3,
+            ((x_min - x_center) * SIN(RADIANS(angle)) + (y_max - y_center) * COS(RADIANS(angle))) + y_center AS y4
+        FROM (
+            SELECT
+                pl.ID AS planogram_id,
+                pr.DESC1 AS country_code,
+                REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '') AS item_number,
+                COALESCE(p.ANGLE, 0) AS angle,
+                COALESCE(
+                    p.X,
+                    (
+                        COALESCE(p.MERCHXMIN, p.X - (p.WIDTH / 2))
+                        + COALESCE(p.MERCHXMAX, p.X + (p.WIDTH / 2))
+                    ) / 2
+                ) AS x_center,
+                COALESCE(
+                    p.Y,
+                    (
+                        COALESCE(p.MERCHYMIN, p.Y - (p.HEIGHT / 2))
+                        + COALESCE(p.MERCHYMAX, p.Y + (p.HEIGHT / 2))
+                    ) / 2
+                ) AS y_center,
+                COALESCE(p.MERCHXMIN, p.X - (p.WIDTH / 2)) AS x_min,
+                COALESCE(p.MERCHXMAX, p.X + (p.WIDTH / 2)) AS x_max,
+                COALESCE(p.MERCHYMIN, p.Y - (p.HEIGHT / 2)) AS y_min,
+                COALESCE(p.MERCHYMAX, p.Y + (p.HEIGHT / 2)) AS y_max,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        pl.ID,
+                        pr.DESC1,
+                        REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '')
+                    ORDER BY p.DW_STRT_TS DESC, p.DBKEY DESC
+                ) AS rn
+            FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_POSITION p
+            JOIN BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_PRODUCT pr
+                ON p.DBPARENTPRODUCTKEY = pr.DBKEY
+               AND pr.DW_REC_DEL_IND = FALSE
+            JOIN BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_PLANOGRAM pl
+                ON p.DBPARENTPLANOGRAMKEY = pl.DBKEY
+               AND pl.DW_REC_DEL_IND = FALSE
+            WHERE p.DW_REC_DEL_IND = FALSE
+        ) positioned
+        WHERE rn = 1
+    )
+),
+
+-- item_grade AS (
+--     SELECT
+--         COUNTRY_CODE,
+--         item_number,
+--         item_grade,
+--         facings,
+--         hfacings,
+--         vfacings
+--     FROM (
+--         SELECT
+--             pr.DESC1 AS COUNTRY_CODE,
+--             REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '') AS item_number,
+--             pr.DESC8 AS item_grade,
+--             ps.facings,
+--             ps.hfacings,
+--             ps.vfacings,
+--             ROW_NUMBER() OVER (
+--                 PARTITION BY
+--                     pr.DESC1,
+--                     REPLACE(REPLACE(pr.ID, '-AU', ''), '-NZ', '')
+--                 ORDER BY pr.DW_STRT_TS DESC
+--             ) AS rn
+--         FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_PRODUCT pr
+--         LEFT JOIN (
+--             SELECT
+--                 dbparentproductkey,
+--                 facings,
+--                 hfacings,
+--                 vfacings
+--             FROM BDWPRD_SRCI.BLUEYONDER_CKB.IX_SPC_POSITION
+--             QUALIFY ROW_NUMBER() OVER (
+--                 PARTITION BY DBKey
+--                 ORDER BY DW_STRT_TS DESC
+--             ) = 1
+--             AND DW_REC_DEL_IND = FALSE
+--         ) ps
+--             ON pr.DBKey = ps.dbparentproductkey
+--         WHERE pr.DW_REC_DEL_IND = FALSE
+--     )
+--     WHERE rn = 1
+-- ),
+
+/* ---------------------------------------------------------
    Item-location ranging stats
-   Current status resolved from ITEM_STATUS SCD2 table.
+   Current item status comes from DW_ITEM_STATUS_ID
+   in ITEM_LOCATION_RANGING_STATS_FCT.
 --------------------------------------------------------- */
 ranging_stats AS (
     SELECT
-        agg.DW_ITEM_ID,
-        agg.DW_LOCATION_ID,
-        agg.first_sales_date,
-        agg.earliest_inventory_stock_movement_date,
-        ist.DW_ITEM_STATUS_ID AS current_dw_item_status_id,
-        isdim.ITEM_STATUS_CODE AS current_item_status_code
-    FROM (
-        SELECT
-            DW_ITEM_ID,
-            DW_LOCATION_ID,
-            MIN(CAST(FIRST_SALE_DATE AS DATE)) AS first_sales_date,
-            MIN(CAST(EARLIEST_INVENTORY_STOCK_MOVEMENT_DATE AS DATE))
-                AS earliest_inventory_stock_movement_date
-        FROM BDWPRD_CDS.MERCHANDISING.ITEM_LOCATION_RANGING_STATS_FCT
-        GROUP BY DW_ITEM_ID, DW_LOCATION_ID
-    ) agg
-    LEFT JOIN BDWPRD_IDS.INVENTORY.ITEM_LOCATION_STATUS ist
-        ON  ist.DW_ITEM_ID     = agg.DW_ITEM_ID
-        AND ist.DW_LOCATION_ID = agg.DW_LOCATION_ID
-        AND ist.DW_END_TS      = '9999-12-31 23:59:59.999999999'
-        AND ist.DW_REC_DEL_IND = FALSE
+        rs.DW_ITEM_ID,
+        rs.DW_LOCATION_ID,
+
+        MIN(CAST(rs.FIRST_SALE_DATE AS DATE)) AS first_sales_date,
+
+        MIN(
+            CAST(rs.EARLIEST_INVENTORY_STOCK_MOVEMENT_DATE AS DATE)
+        ) AS earliest_inventory_stock_movement_date,
+
+        MAX(rs.DW_ITEM_STATUS_ID) AS current_dw_item_status_id,
+        MAX(isdim.ITEM_STATUS_CODE) AS current_item_status_code
+
+    FROM BDWPRD_CDS.MERCHANDISING.ITEM_LOCATION_RANGING_STATS_FCT rs
+
     LEFT JOIN BDWPRD_CDS.COMMON.ITEM_STATUS_DIM isdim
-        ON isdim.DW_ITEM_STATUS_ID = ist.DW_ITEM_STATUS_ID
+        ON isdim.DW_ITEM_STATUS_ID = rs.DW_ITEM_STATUS_ID
+
+    GROUP BY
+        rs.DW_ITEM_ID,
+        rs.DW_LOCATION_ID
 ),
 
 /* ---------------------------------------------------------
@@ -591,9 +676,10 @@ base AS (
         ii.ITEM_DESCRIPTION,
 
         ig.item_grade,
-        ig.facings,
-        ig.hfacings,
-        ig.vfacings,
+        pip.polygon,
+        -- ig.facings,
+        -- ig.hfacings,
+        -- ig.vfacings,
 
         i.PURCHASING_UOM_RATE,
         pp.CAPACITY / NULLIF(i.PURCHASING_UOM_RATE, 0) AS pack_on_show
@@ -615,6 +701,11 @@ base AS (
 
     JOIN live_planograms pg
         ON pp.DW_PLANOGRAM_ID = pg.DW_PLANOGRAM_ID
+
+    LEFT JOIN planogram_item_polygon pip
+        ON TO_VARCHAR(pg.PLANOGRAM_ID) = TO_VARCHAR(pip.planogram_id)
+       AND TO_VARCHAR(ii.ITEM_NUMBER) = TO_VARCHAR(pip.item_number)
+       AND pp.COUNTRY_CODE = pip.country_code
 
     JOIN BDWPRD_CDS.SPACE_PLANNING.PLANOGRAM_ITEM_LOCATION_BRIDGE ilp
         ON pp.DW_PLANOGRAM_ID = ilp.DW_PLANOGRAM_ID
@@ -708,12 +799,6 @@ metrics AS (
             THEN 1 ELSE 0
         END AS possible_space_donor_flag,
 
-        CASE
-            WHEN COALESCE(s.UnitsPSPW52,0) = 0
-                THEN 1
-                ELSE 0
-            END AS no_sales_flag,
-
         COALESCE(s.UnitsPSPW52, 0) / NULLIF(b.CAPACITY, 0) AS sales_per_capacity_unit
 
     FROM base b
@@ -762,7 +847,7 @@ final AS (
         first_sales_date,
         earliest_inventory_stock_movement_date,
 
-        TO_VARCHAR(current_dw_item_status_id, 'HEX') as current_dw_item_status_id,
+        current_dw_item_status_id,
         current_item_status_code,
 
         item_status_code_list,
@@ -772,24 +857,25 @@ final AS (
         active_weeks,
         missing_weeks,
 
-        TO_VARCHAR(DW_PLANOGRAM_ID, 'HEX') as DW_PLANOGRAM_ID,
+        DW_PLANOGRAM_ID,
         PLANOGRAM_ID,
         PLANOGRAM_NAME,
         PLANOGRAM_DEPARTMENT_NAME,
 
-        TO_VARCHAR(DW_LOCATION_ID, 'HEX') as DW_LOCATION_ID,
+        DW_LOCATION_ID,
         LOCATION_NAME,
         LOCATION_CODE,
         IS_CLOSED,
         location_type_code,
 
-        TO_VARCHAR(DW_ITEM_ID, 'HEX') as DW_ITEM_ID,
+        DW_ITEM_ID,
         ITEM_NUMBER,
         ITEM_DESCRIPTION,
         item_grade,
-        facings,
-        hfacings,
-        vfacings,
+        polygon,
+        -- facings,
+        -- hfacings,
+        -- vfacings,
         MERCHANDISING_STYLE_CODE,
 
         CAPACITY,
@@ -828,17 +914,17 @@ final AS (
 
         CASE
             WHEN COALESCE(UnitsPSPW52,0) = 0
-            THEN 'NO SALES - REVIEW SPACE'
-
+                THEN 'NO SALES - REVIEW SPACE'
+                
             WHEN needs_more_space_flag = 1
-                AND productivity_rank >= 0.70
+                 AND productivity_rank >= 0.70
             THEN 'HIGH PRIORITY - ADD SPACE'
 
             WHEN needs_more_space_flag = 1
             THEN 'ADD SPACE / REVIEW'
 
             WHEN possible_space_donor_flag = 1
-                AND productivity_rank <= 0.30
+                 AND productivity_rank <= 0.30
             THEN 'SPACE DONOR - REDUCE SPACE'
 
             WHEN WOS >= 12
